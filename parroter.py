@@ -17,6 +17,7 @@ from __future__ import print_function
 import os
 import re
 import sys
+import argparse
 from getpass import getpass
 
 # Third-party
@@ -60,38 +61,110 @@ PARROT_ROOT = os.path.join(
 class EmSlackPartyParroter(object):
     """Class to interact with the Slack emoji customizer."""
 
-    def __init__(self, team, email, password):
-        """Initialize class and connect to Slack.
-
-        Args:
-            team (str): Slack team name slug
-            email (str): Slack team user email address
-            password (str): Slack team user password
-
-        """
+    def __init__(self):
+        """Initialize class and connect to Slack."""
         self._parrot = {
             'json': PARROT_ROOT.format('parrots.json'),
             'img': PARROT_ROOT.format('parrots')
         }
 
-        # Set auth
-        self.auth = {
-            'team': team,
-            'email': email,
-            'password': password
-        }
+        # Build argparser
+        self._build_parser()
+
+        # Parse args
+        self.args = self._parse_args()
 
         # Specify bs parser
         self._bs_parser = 'html.parser'
 
         # Build Slack team URLs
-        self.team_url = 'https://{team}.slack.com'.format(team=team)
+        self.team_url = 'https://{team}.slack.com'.format(team=self.args.team)
         self.emoji_url = '{team_url}/customize/emoji'.format(
             team_url=self.team_url
         )
 
         # Start slack session
         self.session = self.start_session()
+
+    def _build_parser(self):
+        """Build the CLI argument parser."""
+        self._parser = argparse.ArgumentParser(
+            description='{title} v{version} / by {author} <{email}>'.format(
+                title=__title__,
+                version=__version__,
+                author=__author__,
+                email=__email__
+            ),
+            formatter_class=argparse.RawTextHelpFormatter
+        )
+
+        # Create credentials argument group
+        auth_group = self._parser.add_argument_group('Slack Credentials')
+
+        # Add credential arguments
+        auth_group.add_argument(
+            '--team', '-t',
+            default=os.getenv('SLACK_TEAM'),
+            help='\n'.join(
+                [
+                    'Slack team name.',
+                    'Defaults to the $SLACK_TEAM environment variable.'
+                ]
+            ),
+            type=str.lower
+        )
+        auth_group.add_argument(
+            '--email', '-e',
+            default=os.getenv('SLACK_EMAIL'),
+            help='\n'.join(
+                [
+                    'Slack user email address.',
+                    'Defaults to the $SLACK_EMAIL environment variable.'
+                ]
+            )
+        )
+        auth_group.add_argument(
+            '--password', '-p',
+            default=os.getenv('SLACK_PASSWORD'),
+            help='\n'.join(
+                [
+                    'Slack user password.',
+                    'Defaults to the $SLACK_PASSWORD environment variable.'
+                ]
+            )
+        )
+
+        # Add optional arguments
+        self._parser.add_argument(
+            '--list_existing', '-l',
+            action='store_true',
+            help='Displays a list of your Slack team\'s existing parrots'
+        )
+        self._parser.add_argument(
+            '--list_available', '-a',
+            action='store_true',
+            help='Displays a list of all available parrots'
+        )
+
+    def _parse_args(self):
+        """Load credentials from args or prompt the user for them.
+
+        Returns:
+            object: User credentials and other CLI arguments
+
+        """
+        args = self._parser.parse_args()
+
+        # Prompt user for missing args
+        if not args.team:
+            args.team_name = raw_input('Slack Team: ').strip()
+        if not args.email:
+            args.email = raw_input('Slack Email: ').strip()
+        if not args.password:
+            args.password = getpass('Slack Password: ')
+
+        # Return args
+        return args
 
     def get_current_emoji_list(self):
         """Retrieve list of current Slack team emoji."""
@@ -141,8 +214,8 @@ class EmSlackPartyParroter(object):
             'signin=1',
             'redir=',
             'crumb={0}'.format(quote(login_crumb.encode('utf-8'), safe='*')),
-            'email={0}'.format(quote(self.auth['email'], safe='*')),
-            'password={0}'.format(quote(self.auth['password'], safe='*')),
+            'email={0}'.format(quote(self.args.email, safe='*')),
+            'password={0}'.format(quote(self.args.password, safe='*')),
             'remember=on'
         ]
 
@@ -154,6 +227,20 @@ class EmSlackPartyParroter(object):
             allow_redirects=False
         )
         login.raise_for_status()
+
+        # Check that we're successfully logged in
+        # Slack will return a 302 for successful POST requests here
+        if login.status_code != 302:
+            print(
+                ' '.join(
+                    [
+                        'ERROR: There was a problem logging in to Slack.',
+                        'Check your team, email, and password and try again.'
+                    ]
+                ),
+                file=sys.stderr
+            )
+            sys.exit(1)
 
         # Return logged in session
         return session
@@ -236,8 +323,25 @@ class EmSlackPartyParroter(object):
         # Get existing emoji list
         current_emoji = self.get_current_emoji_list()
 
+        # If we're listing existing, do that and exit
+        if self.args.list_existing:
+            print('Existing Parrots:', file=sys.stdout)
+
+            # Only show parrot emojis
+            for emoji in current_emoji:
+                if re.search(r'parrot', emoji, re.I):
+                    print(
+                        ':{parrot}:'.format(parrot=emoji),
+                        file=sys.stdout
+                    )
+            sys.exit()
+
         # Initialize added parrots tracker
         added = []
+        if self.args.list_available:
+            print('Available Parrots:', file=sys.stdout)
+        else:
+            print('Starting Parroting...', file=sys.stdout)
 
         # Loop over all parrots
         for parrot in parrots:
@@ -250,6 +354,14 @@ class EmSlackPartyParroter(object):
             elif 'gif' in parrot.keys():
                 use_hd = False
                 parrot['slug'] = re.split(r'\.', parrot['gif'])[0]
+
+            # If we're only listing, do that
+            if self.args.list_available:
+                print(
+                    ':{parrot}:'.format(parrot=parrot['slug']),
+                    file=sys.stdout
+                )
+                continue
 
             # Add the parrot if it doesn't already exist
             if parrot['slug'] not in current_emoji:
@@ -275,44 +387,20 @@ class EmSlackPartyParroter(object):
                 )
                 added.append(parrot)
 
+        # Exit if we're just listing
+        if self.args.list_available:
+            sys.exit()
+
         # Return list of added parrots
         return added
-
-    @staticmethod
-    def get_credentials():
-        """Prompt user for Slack credentials.
-
-        Returns:
-            dict: User credentials
-        """
-        print('Login to Slack:', file=sys.stdout)
-
-        # User prompts
-        team = raw_input('+ Team Name: ').strip().lower()
-        email = raw_input('+ Email: ').strip()
-        password = getpass('+ Password: ')
-
-        # Return dict of user data
-        return {
-            'team': team,
-            'email': email,
-            'password': password
-        }
 
 
 def main():
     """Main parroter function."""
-    print('=== EM Slack Party Parroter ===', file=sys.stdout)
-
-    # Get user Slack credentials
-    auth = EmSlackPartyParroter.get_credentials()
+    parroter = EmSlackPartyParroter()
     print('', file=sys.stdout)
 
-    # Initialize the parroter
-    parroter = EmSlackPartyParroter(**auth)
-
     # Start parroting
-    print('Starting Parroting...', file=sys.stdout)
     added = parroter.parrot()
 
     # Finish parroting
