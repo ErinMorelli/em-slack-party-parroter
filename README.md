@@ -1,6 +1,6 @@
 # EM Slack Party Parroter
 
-Add Party Parrots to your [Slack](#disclaimer) team's emojis.
+Add Party Parrots to your [Slack](#disclaimer) team's custom emoji library.
 
 ## Installation
 
