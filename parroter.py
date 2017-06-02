@@ -396,7 +396,7 @@ class EmSlackPartyParroter(object):
 
 
 def main():
-    """Main parroter function."""
+    """Primary parroter function."""
     parroter = EmSlackPartyParroter()
     print('', file=sys.stdout)
 
