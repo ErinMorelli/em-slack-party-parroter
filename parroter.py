@@ -202,6 +202,7 @@ class EmSlackPartyParroter(object):
         Returns:
            requests.Session: Updated Requests session object
            requests.Response: Login page response object
+           string: URL to use for login post call
 
         """
         post_regex = r'<form id="signin_form" action="/" method="post"'
@@ -212,15 +213,18 @@ class EmSlackPartyParroter(object):
 
         # Check for presence of login form and return if found
         if re.search(post_regex, landing.content):
-            return (session, landing)
+            return (session, landing, self.team_url)
+
+        # Set up non-OAuth page url
+        non_oauth_url = '{team_url}/?no_sso=1'.format(team_url=self.team_url)
 
         # Attempt to load non-OAuth login page
-        login = session.get(self.team_url, params={'no_sso': 1})
+        login = session.get(non_oauth_url)
         login.raise_for_status()
 
         # Check for presence of login form and return if found
         if re.search(post_regex, login.content):
-            return (session, login)
+            return (session, login, non_oauth_url)
 
         # Exit and print error message if login form is not found
         print(
@@ -244,7 +248,7 @@ class EmSlackPartyParroter(object):
         session = requests.Session()
 
         # Load login page
-        (session, login_page) = self.get_login_page(session)
+        (session, login_page, team_url) = self.get_login_page(session)
 
         # Get login crumb
         login_crumb = self.get_form_crumb(login_page)
@@ -261,7 +265,7 @@ class EmSlackPartyParroter(object):
 
         # Login to Downpour
         login = session.post(
-            self.team_url,
+            team_url,
             data='&'.join(data),
             headers={'Content-Type': 'application/x-www-form-urlencoded'},
             allow_redirects=False
