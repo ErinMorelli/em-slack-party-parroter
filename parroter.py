@@ -7,7 +7,7 @@ Title       : EM Slack Party Parroter
 Author      : Erin Morelli
 Email       : erin@erinmorelli.com
 License     : MIT
-Version     : 0.1
+Version     : 0.2
 """
 
 # Future
@@ -37,7 +37,7 @@ __copyright__ = 'Copyright (c) 2017, Erin Morelli'
 __author__ = 'Erin Morelli'
 __email__ = 'erin@erinmorelli.com'
 __license__ = 'MIT'
-__version__ = '0.1'
+__version__ = '0.2'
 
 # Disable SSL warnings
 urllib3.disable_warnings()
@@ -193,6 +193,47 @@ class EmSlackPartyParroter(object):
         soup = BeautifulSoup(page.text, self._bs_parser)
         return soup.find('input', attrs={'name': 'crumb'})['value']
 
+    def get_login_page(self, session):
+        """Get the non-OAuth slack team login page.
+
+        Args:
+            session (requests.Session): Requests session object
+
+        Returns:
+           requests.Session: Updated Requests session object
+           requests.Response: Login page response object
+
+        """
+        post_regex = r'<form id="signin_form" action="/" method="post"'
+
+        # Load initial team landing page
+        landing = session.get(self.team_url)
+        landing.raise_for_status()
+
+        # Check for presence of login form and return if found
+        if re.search(post_regex, landing.content):
+            return (session, landing)
+
+        # Attempt to load non-OAuth login page
+        login = session.get(self.team_url, params={'no_sso': 1})
+        login.raise_for_status()
+
+        # Check for presence of login form and return if found
+        if re.search(post_regex, login.content):
+            return (session, login)
+
+        # Exit and print error message if login form is not found
+        print(
+            ' '.join(
+                [
+                    'ERROR: There was a problem logging in to Slack.',
+                    'OAuth login is not supported at this time.'
+                ]
+            ),
+            file=sys.stderr
+        )
+        sys.exit(1)
+
     def start_session(self):
         """Login to Slack to start browsing session.
 
@@ -203,8 +244,7 @@ class EmSlackPartyParroter(object):
         session = requests.Session()
 
         # Load login page
-        login_page = session.get(self.team_url)
-        login_page.raise_for_status()
+        (session, login_page) = self.get_login_page(session)
 
         # Get login crumb
         login_crumb = self.get_form_crumb(login_page)
