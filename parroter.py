@@ -157,7 +157,7 @@ class EmSlackPartyParroter(object):
 
         # Prompt user for missing args
         if not args.team:
-            args.team_name = raw_input('Slack Team: ').strip()
+            args.team = raw_input('Slack Team: ').strip()
         if not args.email:
             args.email = raw_input('Slack Email: ').strip()
         if not args.password:
