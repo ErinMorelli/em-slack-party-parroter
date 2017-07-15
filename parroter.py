@@ -7,7 +7,7 @@ Title       : EM Slack Party Parroter
 Author      : Erin Morelli
 Email       : erin@erinmorelli.com
 License     : MIT
-Version     : 0.2
+Version     : 0.3
 """
 
 # Future
@@ -39,7 +39,7 @@ __copyright__ = 'Copyright (c) 2017, Erin Morelli'
 __author__ = 'Erin Morelli'
 __email__ = 'erin@erinmorelli.com'
 __license__ = 'MIT'
-__version__ = '0.2'
+__version__ = '0.3'
 
 # Disable SSL warnings
 urllib3.disable_warnings()
