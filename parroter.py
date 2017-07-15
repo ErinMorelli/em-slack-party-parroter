@@ -7,7 +7,7 @@ Title       : EM Slack Party Parroter
 Author      : Erin Morelli
 Email       : erin@erinmorelli.com
 License     : MIT
-Version     : 0.2
+Version     : 0.3
 """
 
 # Future
@@ -17,8 +17,10 @@ from __future__ import print_function
 import os
 import re
 import sys
+import pickle
 import argparse
 from getpass import getpass
+from datetime import datetime, timedelta
 
 # Third-party
 import requests
@@ -37,7 +39,7 @@ __copyright__ = 'Copyright (c) 2017, Erin Morelli'
 __author__ = 'Erin Morelli'
 __email__ = 'erin@erinmorelli.com'
 __license__ = 'MIT'
-__version__ = '0.2'
+__version__ = '0.3'
 
 # Disable SSL warnings
 urllib3.disable_warnings()
@@ -83,8 +85,18 @@ class EmSlackPartyParroter(object):
             team_url=self.team_url
         )
 
+        # Set requests caching data
+        self._cache = {
+            'pickle_protocol': 2,
+            'cookie_expire_default': {
+                'hours': 1
+            },
+            'cookies_file': '.slack_cookies'
+        }
+
         # Start slack session
-        self.session = self.start_session()
+        self.session = requests.Session()
+        self._load_cookie_jar(refresh=self.args.refresh)
 
     def _build_parser(self):
         """Build the CLI argument parser."""
@@ -145,8 +157,20 @@ class EmSlackPartyParroter(object):
             action='store_true',
             help='Displays a list of all available parrots'
         )
+        self._parser.add_argument(
+            '-r', '--refresh',
+            default=False,
+            help='Force a refresh of cached login data',
+            action='store_true'
+        )
+        self._parser.add_argument(
+            '-n', '--no_prompt',
+            default=False,
+            help='Don\'t prompt for approval to add parrots',
+            action='store_true'
+        )
 
-    def _parse_args(self):
+    def _parse_args(self, required=False):
         """Load credentials from args or prompt the user for them.
 
         Returns:
@@ -158,13 +182,276 @@ class EmSlackPartyParroter(object):
         # Prompt user for missing args
         if not args.team:
             args.team = raw_input('Slack Team: ').strip()
-        if not args.email:
+        if not args.email and required:
             args.email = raw_input('Slack Email: ').strip()
-        if not args.password:
+        if not args.password and required:
             args.password = getpass('Slack Password: ')
 
         # Return args
         return args
+
+    def _store_cookies(self, cookies):
+        """Store user cookies to local cache file.
+
+        Args:
+            RequestsCookieJar: Requests session cookie jar object from Downpour
+
+        """
+        pickle.dump(
+            cookies,
+            open(self._cache['cookies_file'], 'wb+'),
+            protocol=self._cache['pickle_protocol']
+        )
+
+    def _load_cookies(self):
+        """Load user cookies from local cache file."""
+        return pickle.load(open(self._cache['cookies_file'], 'rb'))
+
+    def _fill_cookie_jar(self, cookies):
+        """Load cached cookies into instance Requests cookie jar.
+
+        Args:
+            RequestsCookieJar: Requests session cookie jar object from Downpour
+
+        """
+        self.session.cookies.update(cookies)
+
+    def _cookies_expired(self, cookies):
+        """Check if user cookies have expired.
+
+        Args:
+            RequestsCookieJar: Requests session cookie jar object from Downpour
+
+        Retuns:
+            bool: True if any required cookies have expired, else False
+
+        """
+        now = datetime.now()
+
+        # Get modification time of cookie file
+        mod_time = datetime.fromtimestamp(
+            os.path.getmtime(self._cache['cookies_file'])
+        )
+
+        # Set default refresh time
+        refresh = timedelta(**self._cache['cookie_expire_default'])
+
+        # Check cookie file modification time
+        if now - mod_time > refresh:
+            return True
+
+        # Check on Downpour cookie expiration times
+        for cookie in cookies:
+            # Get cookie expiration
+            expires = datetime.fromtimestamp(cookie.expires)
+
+            # Exit if cookie has expired
+            if now > expires:
+                return True
+
+        # Return not expired
+        return False
+
+    def _load_cookie_jar(self, refresh=False):
+        """Retrieve cookies from local cache or new from Downpour.
+
+        Args:
+            refresh (bool, optional): Force a refresh of cached cookie data
+
+        """
+        if not refresh:
+            try:
+                cookies = self._load_cookies()
+            except IOError:
+                refresh = True
+            else:
+                # Check for missing or expired cookies
+                if not cookies or self._cookies_expired(cookies):
+                    refresh = True
+
+        # Get new cookies
+        if refresh:
+            # Parse args
+            self.args = self._parse_args(True)
+
+            # Retrieve cookies from Downpour
+            cookies = self._get_cookies()
+
+            # Store new cookies
+            self._store_cookies(cookies)
+
+        # Fill the cookie jar
+        self._fill_cookie_jar(cookies)
+
+    def _get_form_crumb(self, page, crumb='crumb'):
+        """Parse form on page to retrieve Slack crumb.
+
+        Args:
+            page (requests.Response): Page response object to parse
+
+        Returns:
+            str: Slack crumb string
+
+        """
+        soup = BeautifulSoup(page.text, self._bs_parser)
+        return soup.find('input', attrs={'name': crumb})['value']
+
+    def _validate_tfa(self, page, team_url):
+        """Check for and validate TFA codes for login.
+
+        Args:
+            page (requests.Response): Page response object to parse
+            team_url: Slack team URL to use for login post call
+
+        Returns:
+           requests.Response: Login page response object
+
+        """
+        tf_regex = r'<input id="auth_code"'
+
+        # Return if no TFA
+        if not re.search(tf_regex, page.content):
+            return page
+
+        # Prompt user for TFA code
+        tfa_code = raw_input('Two-Factor Authentication Code: ').strip()
+
+        # Get login crumb
+        login_crumb = self._get_form_crumb(page)
+        login_sig = self._get_form_crumb(page, 'sig')
+
+        # Set params
+        data = [
+            'signin_2fa=1',
+            'doing_2fa=1',
+            'redir=',
+            'using_backup=',
+            'remember=1',
+            'sig={0}'.format(quote(login_sig.encode('utf-8'), safe='*')),
+            'crumb={0}'.format(quote(login_crumb.encode('utf-8'), safe='*')),
+            '2fa_code={0}'.format(tfa_code)
+        ]
+
+        # Login to Downpour
+        login = self.session.post(
+            team_url,
+            data='&'.join(data),
+            headers={'Content-Type': 'application/x-www-form-urlencoded'},
+            allow_redirects=False
+        )
+        login.raise_for_status()
+
+        # Return logged in session and page object
+        return login
+
+    def _get_login_page(self):
+        """Get the non-OAuth slack team login page.
+
+        Returns:
+           requests.Response: Login page response object
+           string: URL to use for login post call
+
+        """
+        post_regex = r'<form id="signin_form" action="/" method="post"'
+
+        # Load initial team landing page
+        landing = self.session.get(self.team_url)
+        landing.raise_for_status()
+
+        # Check for presence of login form and return if found
+        if re.search(post_regex, landing.content):
+            return (landing, self.team_url)
+
+        # Set up non-OAuth page url
+        non_oauth_url = '{team_url}/?no_sso=1'.format(team_url=self.team_url)
+
+        # Attempt to load non-OAuth login page
+        login = self.session.get(non_oauth_url)
+        login.raise_for_status()
+
+        # Check for presence of login form and return if found
+        if re.search(post_regex, login.content):
+            return (login, non_oauth_url)
+
+        # Exit and print error message if login form is not found
+        print(
+            ' '.join(
+                [
+                    'ERROR: There was a problem logging in to Slack.',
+                    'OAuth login is not supported at this time.'
+                ]
+            ),
+            file=sys.stderr
+        )
+        sys.exit(1)
+
+    def _get_cookies(self):
+        """Login to Slack to retrieve user cookies.
+
+        Returns:
+            RequestsCookieJar: Logged in Slack response object cookie jar
+
+        """
+        (login_page, team_url) = self._get_login_page()
+
+        # Get login crumb
+        login_crumb = self._get_form_crumb(login_page)
+
+        # Set params
+        data = [
+            'signin=1',
+            'redir=',
+            'crumb={0}'.format(quote(login_crumb.encode('utf-8'), safe='*')),
+            'email={0}'.format(quote(self.args.email, safe='*')),
+            'password={0}'.format(quote(self.args.password, safe='*')),
+            'remember=on'
+        ]
+
+        # Login to Downpour
+        login = self.session.post(
+            team_url,
+            data='&'.join(data),
+            headers={'Content-Type': 'application/x-www-form-urlencoded'},
+            allow_redirects=False
+        )
+        login.raise_for_status()
+
+        # Check for two-factor auth
+        validated = self._validate_tfa(login, team_url)
+
+        # Check that we're successfully logged in
+        # Slack will return a 302 for successful POST requests here
+        if validated.status_code != 302:
+            print(
+                ' '.join(
+                    [
+                        'ERROR: There was a problem logging in to Slack.',
+                        'Check your team, email, and password and try again.'
+                    ]
+                ),
+                file=sys.stderr
+            )
+            sys.exit(1)
+
+        # Return logged in session
+        return validated.cookies
+
+    def yes_or_no(self, question):
+        """Prompts the user for a yes or no answer to a question.
+
+        Args:
+            question (str): Question to prompt the user with
+
+        Returns:
+            bool: True or False response to the question
+
+        """
+        reply = str(raw_input(question + ' (y/n): ')).lower().strip()
+        if reply[0] == 'y':
+            return True
+        if reply[0] == 'n':
+            return False
+        return self.yes_or_no(question)
 
     def get_current_emoji_list(self):
         """Retrieve list of current Slack team emoji."""
@@ -180,115 +467,6 @@ class EmSlackPartyParroter(object):
         # Return list of emoji
         return emoji
 
-    def get_form_crumb(self, page):
-        """Parse form on page to retrieve Slack crumb.
-
-        Args:
-            page (requests.Response): Page response object to parse
-
-        Returns:
-            str: Slack crumb string
-
-        """
-        soup = BeautifulSoup(page.text, self._bs_parser)
-        return soup.find('input', attrs={'name': 'crumb'})['value']
-
-    def get_login_page(self, session):
-        """Get the non-OAuth slack team login page.
-
-        Args:
-            session (requests.Session): Requests session object
-
-        Returns:
-           requests.Session: Updated Requests session object
-           requests.Response: Login page response object
-           string: URL to use for login post call
-
-        """
-        post_regex = r'<form id="signin_form" action="/" method="post"'
-
-        # Load initial team landing page
-        landing = session.get(self.team_url)
-        landing.raise_for_status()
-
-        # Check for presence of login form and return if found
-        if re.search(post_regex, landing.content):
-            return (session, landing, self.team_url)
-
-        # Set up non-OAuth page url
-        non_oauth_url = '{team_url}/?no_sso=1'.format(team_url=self.team_url)
-
-        # Attempt to load non-OAuth login page
-        login = session.get(non_oauth_url)
-        login.raise_for_status()
-
-        # Check for presence of login form and return if found
-        if re.search(post_regex, login.content):
-            return (session, login, non_oauth_url)
-
-        # Exit and print error message if login form is not found
-        print(
-            ' '.join(
-                [
-                    'ERROR: There was a problem logging in to Slack.',
-                    'OAuth login is not supported at this time.'
-                ]
-            ),
-            file=sys.stderr
-        )
-        sys.exit(1)
-
-    def start_session(self):
-        """Login to Slack to start browsing session.
-
-        Returns:
-            requests.Session: Logged in Slack session object
-
-        """
-        session = requests.Session()
-
-        # Load login page
-        (session, login_page, team_url) = self.get_login_page(session)
-
-        # Get login crumb
-        login_crumb = self.get_form_crumb(login_page)
-
-        # Set params
-        data = [
-            'signin=1',
-            'redir=',
-            'crumb={0}'.format(quote(login_crumb.encode('utf-8'), safe='*')),
-            'email={0}'.format(quote(self.args.email, safe='*')),
-            'password={0}'.format(quote(self.args.password, safe='*')),
-            'remember=on'
-        ]
-
-        # Login to Downpour
-        login = session.post(
-            team_url,
-            data='&'.join(data),
-            headers={'Content-Type': 'application/x-www-form-urlencoded'},
-            allow_redirects=False
-        )
-        login.raise_for_status()
-
-        # Check that we're successfully logged in
-        # Slack will return a 302 for successful POST requests here
-        if login.status_code != 302:
-            print(
-                ' '.join(
-                    [
-                        'ERROR: There was a problem logging in to Slack.',
-                        'Check your team, email, and password and try again.'
-                    ]
-                ),
-                file=sys.stderr
-            )
-            sys.exit(1)
-
-        # Return logged in session
-        return session
-
     def get_parrot_list(self):
         """Retrieve up-to-date parrot list from GitHub.
 
@@ -302,19 +480,57 @@ class EmSlackPartyParroter(object):
         # Return parsed JSON
         return parrots.json()
 
-    def add_parrot(self, parrot, use_hd=False):
+    def get_parrots_to_add(self, parrots, current_emoji):
+        """Determine which parrots are not already added to the team.
+
+        Args:
+            parrots (list): List of available parrot emojis
+            current_emoji (list): List of current team emojis
+
+        Returns:
+            list: Parrot emojis to be added to the team
+
+        """
+        parrots_to_add = []
+
+        # Loop over all parrots
+        for parrot in parrots:
+            # Check if we can use an HD image
+            if 'hd' in parrot.keys():
+                parrot['use_hd'] = True
+                parrot['slug'] = re.split(r'\/|\.', parrot['hd'])[1]
+
+            # Otherwise use the standard GIF image
+            elif 'gif' in parrot.keys():
+                parrot['use_hd'] = False
+                parrot['slug'] = re.split(r'\.', parrot['gif'])[0]
+
+            # If we're only listing, do that
+            if self.args.list_available:
+                print(
+                    ':{parrot}:'.format(parrot=parrot['slug']),
+                    file=sys.stdout
+                )
+                continue
+
+            # Add the parrot if it doesn't already exist
+            if parrot['slug'] not in current_emoji:
+                parrots_to_add.append(parrot)
+
+        # Return list of parrots to be added
+        return parrots_to_add
+
+    def add_parrot(self, parrot):
         """Upload a new parrot emoji to a Slack team.
 
         Args:
             parrot (dict): Parrot emoji data
-            hd (bool, optional): Whether to use an HD image file
-                Default: False
 
         Returns:
             str: Error data, if there was a error, otherwise None
 
         """
-        parrot_file = parrot['hd'] if use_hd else parrot['gif']
+        parrot_file = parrot['hd'] if parrot['use_hd'] else parrot['gif']
 
         # Get parrot image file path
         parrot_url = os.path.join(self._parrot['img'], parrot_file)
@@ -387,53 +603,61 @@ class EmSlackPartyParroter(object):
         else:
             print('Starting Parroting...', file=sys.stdout)
 
-        # Loop over all parrots
-        for parrot in parrots:
-            # Check if we can use an HD image
-            if 'hd' in parrot.keys():
-                use_hd = True
-                parrot['slug'] = re.split(r'\/|\.', parrot['hd'])[1]
-
-            # Otherwise use the standard GIF image
-            elif 'gif' in parrot.keys():
-                use_hd = False
-                parrot['slug'] = re.split(r'\.', parrot['gif'])[0]
-
-            # If we're only listing, do that
-            if self.args.list_available:
-                print(
-                    ':{parrot}:'.format(parrot=parrot['slug']),
-                    file=sys.stdout
-                )
-                continue
-
-            # Add the parrot if it doesn't already exist
-            if parrot['slug'] not in current_emoji:
-                error = self.add_parrot(parrot, use_hd)
-
-                # Report any errors
-                if error is not None:
-                    print(
-                        '+ Error adding \'{parrot_slug}\', {error}'.format(
-                            parrot_slug=parrot['slug'],
-                            error=error
-                        ),
-                        file=sys.stderr
-                    )
-                    continue
-
-                # Report success
-                print(
-                    '+ Added :{parrot_slug}:'.format(
-                        parrot_slug=parrot['slug']
-                    ),
-                    file=sys.stdout
-                )
-                added.append(parrot)
+        # Get parrots to add
+        parrots_to_add = self.get_parrots_to_add(parrots, current_emoji)
 
         # Exit if we're just listing
         if self.args.list_available:
             sys.exit()
+
+        # Bail if there are no parrots to add
+        if not parrots_to_add:
+            print('No new parrots to add!', file=sys.stdout)
+            sys.exit()
+
+        # Report number of new parrots found
+        print(
+            'Found {count} new parrot{s} to add!'.format(
+                count=len(parrots_to_add),
+                s='' if len(parrots_to_add) == 1 else 's'
+            ),
+            file=sys.stdout
+        )
+
+        # Prompt user to continue
+        if self.args.no_prompt:
+            approved = True
+        else:
+            approved = self.yes_or_no('Add them to your Slack team?')
+
+        # Check for approval
+        if not approved:
+            sys.exit()
+
+        # Loop over parrots to add
+        for parrot in parrots_to_add:
+            # Add the parrot
+            error = self.add_parrot(parrot)
+
+            # Report any errors
+            if error is not None:
+                print(
+                    '+ Error adding \'{parrot_slug}\', {error}'.format(
+                        parrot_slug=parrot['slug'],
+                        error=error
+                    ),
+                    file=sys.stderr
+                )
+                continue
+
+            # Report success
+            print(
+                '+ Added :{parrot_slug}:'.format(
+                    parrot_slug=parrot['slug']
+                ),
+                file=sys.stdout
+            )
+            added.append(parrot)
 
         # Return list of added parrots
         return added
@@ -448,9 +672,7 @@ def main():
     added = parroter.parrot()
 
     # Finish parroting
-    if not added:
-        print('No new parrots to add!', file=sys.stdout)
-    else:
+    if added:
         print(
             'Successfully added {count} new parrots!'.format(count=len(added)),
             file=sys.stdout
