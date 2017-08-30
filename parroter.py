@@ -7,7 +7,7 @@ Title       : EM Slack Party Parroter
 Author      : Erin Morelli
 Email       : erin@erinmorelli.com
 License     : MIT
-Version     : 0.3
+Version     : 0.4
 """
 
 # Future
@@ -39,7 +39,7 @@ __copyright__ = 'Copyright (c) 2017, Erin Morelli'
 __author__ = 'Erin Morelli'
 __email__ = 'erin@erinmorelli.com'
 __license__ = 'MIT'
-__version__ = '0.3'
+__version__ = '0.4'
 
 # Disable SSL warnings
 urllib3.disable_warnings()
@@ -158,13 +158,18 @@ class EmSlackPartyParroter(object):
             help='Displays a list of all available parrots'
         )
         self._parser.add_argument(
+            '--list_new', '-n',
+            action='store_true',
+            help='Displays a list of new parrots for your Slack team'
+        )
+        self._parser.add_argument(
             '-r', '--refresh',
             default=False,
             help='Force a refresh of cached login data',
             action='store_true'
         )
         self._parser.add_argument(
-            '-n', '--no_prompt',
+            '-q', '--quiet',
             default=False,
             help='Don\'t prompt for approval to add parrots',
             action='store_true'
@@ -181,7 +186,10 @@ class EmSlackPartyParroter(object):
 
         # Prompt user for missing args
         if not args.team:
-            args.team = raw_input('Slack Team: ').strip()
+            if hasattr(self, 'args') and hasattr(self.args, 'team'):
+                args.team = self.args.team
+            else:
+                args.team = raw_input('Slack Team: ').strip()
         if not args.email and required:
             args.email = raw_input('Slack Email: ').strip()
         if not args.password and required:
@@ -198,7 +206,7 @@ class EmSlackPartyParroter(object):
 
         """
         pickle.dump(
-            cookies,
+            (self.args.team, cookies),
             open(self._cache['cookies_file'], 'wb+'),
             protocol=self._cache['pickle_protocol']
         )
@@ -261,12 +269,15 @@ class EmSlackPartyParroter(object):
         """
         if not refresh:
             try:
-                cookies = self._load_cookies()
+                (team, cookies) = self._load_cookies()
             except IOError:
                 refresh = True
             else:
-                # Check for missing or expired cookies
-                if not cookies or self._cookies_expired(cookies):
+                # Check for expired cookies
+                expired = self._cookies_expired(cookies)
+
+                # Check for missing or expired cookies or different team name
+                if not cookies or expired or team != self.args.team:
                     refresh = True
 
         # Get new cookies
@@ -542,7 +553,7 @@ class EmSlackPartyParroter(object):
         # Navigate to the emoji page
         emoji_page = self.session.get(self.emoji_url)
         emoji_page.raise_for_status()
-        emoji_crumb = self.get_form_crumb(emoji_page)
+        emoji_crumb = self._get_form_crumb(emoji_page)
 
         # Upload parrot
         emoji_upload = self.session.post(
@@ -624,8 +635,19 @@ class EmSlackPartyParroter(object):
             file=sys.stdout
         )
 
+        # List the parrots
+        for parrot in parrots_to_add:
+            print(
+                ':{parrot}:'.format(parrot=parrot['slug']),
+                file=sys.stdout
+            )
+
+        # Exit if we're just listing
+        if self.args.list_new:
+            sys.exit()
+
         # Prompt user to continue
-        if self.args.no_prompt:
+        if self.args.quiet:
             approved = True
         else:
             approved = self.yes_or_no('Add them to your Slack team?')
