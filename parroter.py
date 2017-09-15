@@ -321,7 +321,7 @@ class EmSlackPartyParroter(object):
         tf_regex = r'<input id="auth_code"'
 
         # Return if no TFA
-        if not re.search(tf_regex, page.content):
+        if not re.search(tf_regex, page.content.decode('utf-8')):
             return page
 
         # Prompt user for TFA code
@@ -370,7 +370,7 @@ class EmSlackPartyParroter(object):
         landing.raise_for_status()
 
         # Check for presence of login form and return if found
-        if re.search(post_regex, landing.content):
+        if re.search(post_regex, landing.content.decode('utf-8')):
             return (landing, self.team_url)
 
         # Set up non-OAuth page url
@@ -381,7 +381,7 @@ class EmSlackPartyParroter(object):
         login.raise_for_status()
 
         # Check for presence of login form and return if found
-        if re.search(post_regex, login.content):
+        if re.search(post_regex, login.content.decode('utf-8')):
             return (login, non_oauth_url)
 
         # Exit and print error message if login form is not found
