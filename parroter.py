@@ -250,6 +250,10 @@ class EmSlackPartyParroter(object):
 
         # Check on Downpour cookie expiration times
         for cookie in cookies:
+            # Skip cookies that don't expire
+            if not cookie.expires:
+                continue
+
             # Get cookie expiration
             expires = datetime.fromtimestamp(cookie.expires)
 
