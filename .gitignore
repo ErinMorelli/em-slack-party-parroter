@@ -1,2 +1,3 @@
 credentials.yml
 .slack_cookies
+environ*
