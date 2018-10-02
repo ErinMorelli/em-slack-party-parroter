@@ -100,6 +100,9 @@ class EmSlackPartyParroter(object):
 
         # Start slack session
         self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 Gecko/20100101 Firefox/60.0'
+        })
         self._load_cookie_jar(refresh=self.args.refresh)
 
         # Get API token for session
@@ -635,6 +638,29 @@ class EmSlackPartyParroter(object):
         # Return list of parrots and guests to be added
         return parrots_to_add + guests_to_add
 
+    def post_emoji(self):
+        """Make a POST request to add a new Slack team emoji."""
+        emoji_add_res = self.session.post(
+            self.__class__.API_ROOT.format('emoji.add'),
+            params={
+                'token': self.api_token,
+                'mode': 'data',
+                'name': ''
+            }
+        )
+        emoji_add_res.raise_for_status()
+
+        # Get JSON response
+        emoji_add = emoji_add_res.json()
+
+        # Check for response errors
+        if not emoji_add['ok']:
+            print(
+                'ERROR: Unable to upload Slack emoji',
+                file=sys.stderr
+            )
+            sys.exit(1)
+
     def add_parrot(self, parrot):
         """Upload a new parrot emoji to a Slack team.
 
@@ -660,34 +686,28 @@ class EmSlackPartyParroter(object):
         # Navigate to the emoji page
         emoji_page = self.session.get(self.emoji_url)
         emoji_page.raise_for_status()
-        emoji_crumb = self._get_form_crumb(emoji_page)
 
         # Upload parrot
-        emoji_upload = self.session.post(
-            self.emoji_url,
+        emoji_upload_res = self.session.post(
+            self.__class__.API_ROOT.format('emoji.add'),
             data={
-                'add': 1,
-                'crumb': emoji_crumb,
+                'token': self.api_token,
                 'name': parrot['slug'],
                 'mode': 'data'
             },
             files={
-                'img': parrot_img.raw
+                'image': parrot_img.raw
             },
             allow_redirects=False
         )
-        emoji_upload.raise_for_status()
+        emoji_upload_res.raise_for_status()
 
-        # Check for any errors
-        if b'alert_error' in emoji_upload.content:
-            # Parse page text
-            soup = BeautifulSoup(emoji_upload.text, self._bs_parser)
+        # Get JSON response
+        emoji_upload = emoji_upload_res.json()
 
-            # Get error information
-            error = soup.find('p', attrs={'class': 'alert_error'})
-
-            # Return error text
-            return error.text
+        # Check for response errors
+        if not emoji_upload['ok'] and 'error' in emoji_upload.keys():
+            return emoji_upload['error']
 
         return None
 
