@@ -7,7 +7,7 @@ Title       : EM Slack Party Parroter
 Author      : Erin Morelli
 Email       : erin@erinmorelli.com
 License     : MIT
-Version     : 0.5
+Version     : 0.6
 """
 
 # Future
