@@ -39,7 +39,7 @@ __copyright__ = 'Copyright (c) 2017-2019, Erin Morelli'
 __author__ = 'Erin Morelli'
 __email__ = 'erin@erinmorelli.com'
 __license__ = 'MIT'
-__version__ = '0.5'
+__version__ = '0.6'
 
 # Disable SSL warnings
 urllib3.disable_warnings()
@@ -66,12 +66,12 @@ class EmSlackPartyParroter(object):
     def __init__(self):
         """Initialize class and connect to Slack."""
         self._parrot = {
-            'json': self.__class__.PARROT_ROOT.format('parrots.json'),
-            'img': self.__class__.PARROT_ROOT.format('parrots')
+            'json': self.PARROT_ROOT.format('parrots.json'),
+            'img': self.PARROT_ROOT.format('parrots')
         }
         self._guest = {
-            'json': self.__class__.PARROT_ROOT.format('guests.json'),
-            'img': self.__class__.PARROT_ROOT.format('guests')
+            'json': self.PARROT_ROOT.format('guests.json'),
+            'img': self.PARROT_ROOT.format('guests')
         }
 
         # Build argparser
@@ -486,7 +486,7 @@ class EmSlackPartyParroter(object):
         emoji_page.raise_for_status()
 
         # Set regex to find token
-        token_regex = r'api_token: \"(xoxs-.+)\",?\n'
+        token_regex = r'\"api_token\":\s?\"(xoxs-[a-zA-Z0-9\-]+)\"'
 
         # Find the session token on page
         token = re.findall(token_regex, emoji_page.text)
@@ -527,7 +527,7 @@ class EmSlackPartyParroter(object):
     def get_current_emoji_list(self):
         """Retrieve list of current Slack team emoji."""
         emoji_res = self.session.get(
-            self.__class__.API_ROOT.format('emoji.list'),
+            self.API_ROOT.format('emoji.list'),
             params={
                 'token': self.api_token
             }
@@ -641,7 +641,7 @@ class EmSlackPartyParroter(object):
     def post_emoji(self):
         """Make a POST request to add a new Slack team emoji."""
         emoji_add_res = self.session.post(
-            self.__class__.API_ROOT.format('emoji.add'),
+            self.API_ROOT.format('emoji.add'),
             params={
                 'token': self.api_token,
                 'mode': 'data',
@@ -689,7 +689,7 @@ class EmSlackPartyParroter(object):
 
         # Upload parrot
         emoji_upload_res = self.session.post(
-            self.__class__.API_ROOT.format('emoji.add'),
+            self.API_ROOT.format('emoji.add'),
             data={
                 'token': self.api_token,
                 'name': parrot['slug'],
@@ -856,7 +856,7 @@ class EmSlackPartyParroter(object):
 
         # Send Slack message
         sent = self.session.post(
-            self.__class__.API_ROOT.format('chat.postMessage'),
+            self.API_ROOT.format('chat.postMessage'),
             data={
                 'token': self.api_token,
                 'channel': self.args.channel,
