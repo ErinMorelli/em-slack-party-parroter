@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Copyright (c) 2017-2019, Erin Morelli.
+Copyright (c) 2017-2021, Erin Morelli.
 
 Title       : EM Slack Party Parroter
 Author      : Erin Morelli
@@ -35,7 +35,7 @@ except ImportError:
 
 # Script credits
 __title__ = 'EM Slack Party Parroter'
-__copyright__ = 'Copyright (c) 2017-2019, Erin Morelli'
+__copyright__ = 'Copyright (c) 2017-2021, Erin Morelli'
 __author__ = 'Erin Morelli'
 __email__ = 'erin@erinmorelli.com'
 __license__ = 'MIT'
