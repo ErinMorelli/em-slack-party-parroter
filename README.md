@@ -2,6 +2,10 @@
 
 Add Party Parrots to your [Slack](#disclaimer) team's custom emoji library.
 
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=ErinMorelli_em-slack-party-parroter&metric=alert_status)](https://sonarcloud.io/dashboard?id=ErinMorelli_em-slack-party-parroter)
+
+---
+
 ## Installation
 
 1. Download this repository:
