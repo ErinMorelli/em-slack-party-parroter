@@ -1,80 +1,75 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Copyright (c) 2017-2021, Erin Morelli.
+Copyright (C) 2021 Erin Morelli.
 
-Title       : EM Slack Party Parroter
-Author      : Erin Morelli
-Email       : erin@erinmorelli.com
-License     : MIT
-Version     : 0.6
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.x
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see [https://www.gnu.org/licenses/].
 """
 
-# Future
-from __future__ import print_function
-
-# Built-ins
 import os
 import re
 import sys
+import json
 import pickle
 import argparse
 from getpass import getpass
 from datetime import datetime, timedelta
 
-# Third-party
+import yaml
 import requests
-from requests.packages import urllib3
-from bs4 import BeautifulSoup
+from yaspin import yaspin
 
-# Import urllib for Python 2 and 3
-try:
-    from urllib import quote  # Python 2.X
-except ImportError:
-    from urllib.parse import quote  # Python 3+
+from selenium import webdriver
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.common.exceptions import NoSuchElementException
+
 
 # Script credits
 __title__ = 'EM Slack Party Parroter'
 __copyright__ = 'Copyright (c) 2017-2021, Erin Morelli'
 __author__ = 'Erin Morelli'
-__email__ = 'erin@erinmorelli.com'
-__license__ = 'MIT'
-__version__ = '0.6'
-
-# Disable SSL warnings
-urllib3.disable_warnings()
-
-# Handle Python 3+ input
-try:
-    raw_input
-except NameError:
-    raw_input = input
+__email__ = 'me@erin.dev'
+__license__ = 'GPL-3.0'
+__version__ = '1.0'
 
 
-class EmSlackPartyParroter(object):
+class EmSlackPartyParroter:
     """Class to interact with the Slack emoji customizer."""
 
-    API_ROOT = 'https://slack.com/api/{0}'
+    API_ROOT = 'https://slack.com/api'
     PARROT_ROOT = os.path.join(
         'https://raw.githubusercontent.com',  # GitHub raw file root
         'jmhobbs',                            # Username
         'cultofthepartyparrot.com',           # Repository
-        'master',                             # Branch
-        '{0}'
+        'master'                              # Branch
     )
+    BROWSERS = [k.lower() for k, v in webdriver.__dict__.items()
+                if getattr(v, '__name__', '') == 'WebDriver']
+    DEFAULT_BROWSER = 'chrome'
 
     def __init__(self):
         """Initialize class and connect to Slack."""
         self._parrot = {
-            'json': self.PARROT_ROOT.format('parrots.json'),
-            'img': self.PARROT_ROOT.format('parrots')
+            'yaml': f'{self.PARROT_ROOT}/parrots.yaml',
+            'img': f'{self.PARROT_ROOT}/parrots'
         }
         self._guest = {
-            'json': self.PARROT_ROOT.format('guests.json'),
-            'img': self.PARROT_ROOT.format('guests')
+            'yaml': f'{self.PARROT_ROOT}/guests.yaml',
+            'img': f'{self.PARROT_ROOT}/guests'
         }
 
-        # Build argparser
+        # Build arg parser
         self._build_parser()
 
         # Parse args
@@ -84,10 +79,8 @@ class EmSlackPartyParroter(object):
         self._bs_parser = 'html.parser'
 
         # Build Slack team URLs
-        self.team_url = 'https://{team}.slack.com'.format(team=self.args.team)
-        self.emoji_url = '{team_url}/customize/emoji'.format(
-            team_url=self.team_url
-        )
+        self.team_url = f'https://{self.args.team}.slack.com'
+        self.emoji_url = f'{self.team_url}/customize/emoji'
 
         # Set requests caching data
         self._cache = {
@@ -95,10 +88,14 @@ class EmSlackPartyParroter(object):
             'cookie_expire_default': {
                 'hours': 1
             },
-            'cookies_file': '.slack_cookies'
+            'cookies_file': '.slack_cookies',
+            'api_key_file': '.slack_api_key'
         }
 
-        # Start slack session
+        # Setup selenium with chrome
+        self.driver = self._get_browser_driver(self.args.browser)
+
+        # Start session with Slack cookies
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 Gecko/20100101 Firefox/60.0'
@@ -106,17 +103,13 @@ class EmSlackPartyParroter(object):
         self._load_cookie_jar(refresh=self.args.refresh)
 
         # Get API token for session
-        self.api_token = self._get_api_token()
+        self.api_token = self._load_api_key(refresh=self.args.refresh)
 
     def _build_parser(self):
         """Build the CLI argument parser."""
         self._parser = argparse.ArgumentParser(
-            description='{title} v{version} / by {author} <{email}>'.format(
-                title=__title__,
-                version=__version__,
-                author=__author__,
-                email=__email__
-            ),
+            description=f'{__title__} v{__version__} / '
+                        f'by {__author__} <{__email__}>',
             formatter_class=argparse.RawTextHelpFormatter
         )
 
@@ -127,52 +120,36 @@ class EmSlackPartyParroter(object):
         auth_group.add_argument(
             '-t', '--team',
             default=os.getenv('SLACK_TEAM'),
-            help='\n'.join(
-                [
-                    'Slack team name.',
-                    'Defaults to the $SLACK_TEAM environment variable.'
-                ]
-            ),
+            help='Slack team name.\n'
+                 'Defaults to the $SLACK_TEAM environment variable.',
             type=str.lower
         )
         auth_group.add_argument(
             '-e', '--email',
             default=os.getenv('SLACK_EMAIL'),
-            help='\n'.join(
-                [
-                    'Slack user email address.',
-                    'Defaults to the $SLACK_EMAIL environment variable.'
-                ]
-            )
+            help='Slack user email address.\n'
+                 'Defaults to the $SLACK_EMAIL environment variable.'
         )
         auth_group.add_argument(
             '-p', '--password',
             default=os.getenv('SLACK_PASSWORD'),
-            help='\n'.join(
-                [
-                    'Slack user password.',
-                    'Defaults to the $SLACK_PASSWORD environment variable.'
-                ]
-            )
+            help='Slack user password.\n'
+                 'Defaults to the $SLACK_PASSWORD environment variable.'
         )
         auth_group.add_argument(
             '-c', '--channel',
             default=os.getenv('SLACK_CHANNEL'),
-            help='\n'.join(
-                [
-                    'Slack channel name to send new parrot messages to.',
-                    'Defaults to the $SLACK_CHANNEL environment variable.',
-                    'Can be a public channel, private channel, or username.',
-                    'e.g. "#public-channel", "private-channel", "@username"'
-                ]
-            )
+            help='Slack channel name to send new parrot messages to.\n'
+                 'Defaults to the $SLACK_CHANNEL environment variable.\n'
+                 'Can be a public channel, private channel, or username.\n'
+                 'e.g. "#public-channel", "private-channel", "@username"'
         )
 
         # Add optional arguments
         self._parser.add_argument(
             '-g', '--include_guests',
             action='store_true',
-            help='Add Party Guests to your team in addition to standard parrots.'
+            help='Add Party Guests to Slack, in addition to standard parrots.'
         )
         self._parser.add_argument(
             '-l', '--list_existing',
@@ -201,14 +178,16 @@ class EmSlackPartyParroter(object):
             help='Don\'t prompt for approval to add parrots.',
             action='store_true'
         )
+        self._parser.add_argument(
+            '-b', '--browser',
+            default=self.DEFAULT_BROWSER,
+            choices=self.BROWSERS,
+            metavar='BROWSER',
+            help='Browser to use for headless requests. [Default: chrome]',
+        )
 
     def _parse_args(self, required=False):
-        """Load credentials from args or prompt the user for them.
-
-        Returns:
-            object: User credentials and other CLI arguments
-
-        """
+        """Load credentials from args or prompt the user for them."""
         args = self._parser.parse_args()
 
         # Prompt user for missing args
@@ -216,22 +195,30 @@ class EmSlackPartyParroter(object):
             if hasattr(self, 'args') and hasattr(self.args, 'team'):
                 args.team = self.args.team
             else:
-                args.team = raw_input('Slack Team: ').strip()
+                args.team = input('Slack Team: ').strip()
         if not args.email and required:
-            args.email = raw_input('Slack Email: ').strip()
+            args.email = input('Slack Email: ').strip()
         if not args.password and required:
             args.password = getpass('Slack Password: ')
 
         # Return args
         return args
 
+    @staticmethod
+    def _get_browser_driver(browser):
+        """Get browser driver object from selenium."""
+        module = getattr(webdriver, browser)
+        if module:
+            options_module = getattr(module, 'options')
+            driver_module = getattr(module, 'webdriver')
+            if options_module and driver_module:
+                options = options_module.Options()
+                options.add_argument('headless')
+                return driver_module.WebDriver(options=options)
+        sys.exit(f'ERROR: not a valid browser option: {browser}')
+
     def _store_cookies(self, cookies):
-        """Store user cookies to local cache file.
-
-        Args:
-            RequestsCookieJar: Requests session cookie jar object from Downpour
-
-        """
+        """Store user cookies to local cache file."""
         pickle.dump(
             (self.args.team, cookies),
             open(self._cache['cookies_file'], 'wb+'),
@@ -243,24 +230,15 @@ class EmSlackPartyParroter(object):
         return pickle.load(open(self._cache['cookies_file'], 'rb'))
 
     def _fill_cookie_jar(self, cookies):
-        """Load cached cookies into instance Requests cookie jar.
-
-        Args:
-            RequestsCookieJar: Requests session cookie jar object from Downpour
-
-        """
-        self.session.cookies.update(cookies)
+        """Load cached cookies into instance Requests cookie jar."""
+        for cookie in cookies:
+            for exclude in ['sameSite', 'expiry', 'httpOnly']:
+                if exclude in cookie:
+                    del cookie[exclude]
+            self.session.cookies.set(**cookie)
 
     def _cookies_expired(self, cookies):
-        """Check if user cookies have expired.
-
-        Args:
-            RequestsCookieJar: Requests session cookie jar object from Downpour
-
-        Retuns:
-            bool: True if any required cookies have expired, else False
-
-        """
+        """Check if user cookies have expired."""
         now = datetime.now()
 
         # Get modification time of cookie file
@@ -275,14 +253,14 @@ class EmSlackPartyParroter(object):
         if now - mod_time > refresh:
             return True
 
-        # Check on Downpour cookie expiration times
+        # Check on cookie expiration times
         for cookie in cookies:
             # Skip cookies that don't expire
-            if not cookie.expires:
+            if 'expiry' not in cookie:
                 continue
 
             # Get cookie expiration
-            expires = datetime.fromtimestamp(cookie.expires)
+            expires = datetime.fromtimestamp(cookie['expiry'])
 
             # Exit if cookie has expired
             if now > expires:
@@ -292,12 +270,7 @@ class EmSlackPartyParroter(object):
         return False
 
     def _load_cookie_jar(self, refresh=False):
-        """Retrieve cookies from local cache or new from Downpour.
-
-        Args:
-            refresh (bool, optional): Force a refresh of cached cookie data
-
-        """
+        """Retrieve cookies from local cache or new from Downpour."""
         if not refresh:
             try:
                 (team, cookies) = self._load_cookies()
@@ -325,199 +298,145 @@ class EmSlackPartyParroter(object):
         # Fill the cookie jar
         self._fill_cookie_jar(cookies)
 
-    def _get_form_crumb(self, page, crumb='crumb'):
-        """Parse form on page to retrieve Slack crumb.
+        # Return the cookie dict
+        return cookies
 
-        Args:
-            page (requests.Response): Page response object to parse
+    def _validate_tfa(self):
+        """Check for and validate TFA codes for login."""
+        tfa_code = input('Two-Factor Authentication Code: ').strip()
 
-        Returns:
-            str: Slack crumb string
+        # Get login form fields
+        auth_code = self.driver.find_element_by_name('2fa_code')
+        submit = self.driver.find_element_by_id('signin_btn')
 
-        """
-        soup = BeautifulSoup(page.text, self._bs_parser)
-        return soup.find('input', attrs={'name': crumb})['value']
+        # Set form info
+        auth_code.send_keys(tfa_code)
 
-    def _validate_tfa(self, page, team_url):
-        """Check for and validate TFA codes for login.
-
-        Args:
-            page (requests.Response): Page response object to parse
-            team_url: Slack team URL to use for login post call
-
-        Returns:
-           requests.Response: Login page response object
-
-        """
-        tf_regex = r'<input id="auth_code"'
-
-        # Return if no TFA
-        if not re.search(tf_regex, page.content.decode('utf-8')):
-            return page
-
-        # Prompt user for TFA code
-        tfa_code = raw_input('Two-Factor Authentication Code: ').strip()
-
-        # Get login crumb
-        login_crumb = self._get_form_crumb(page)
-        login_sig = self._get_form_crumb(page, 'sig')
-
-        # Set params
-        data = [
-            'signin_2fa=1',
-            'doing_2fa=1',
-            'redir=',
-            'using_backup=',
-            'remember=1',
-            'sig={0}'.format(quote(login_sig.encode('utf-8'), safe='*')),
-            'crumb={0}'.format(quote(login_crumb.encode('utf-8'), safe='*')),
-            '2fa_code={0}'.format(tfa_code)
-        ]
-
-        # Login to Downpour
-        login = self.session.post(
-            team_url,
-            data='&'.join(data),
-            headers={'Content-Type': 'application/x-www-form-urlencoded'},
-            allow_redirects=False
-        )
-        login.raise_for_status()
-
-        # Return logged in session and page object
-        return login
+        # Submit form
+        submit.click()
 
     def _get_login_page(self):
-        """Get the non-OAuth slack team login page.
-
-        Returns:
-           requests.Response: Login page response object
-           string: URL to use for login post call
-
-        """
-        post_regex = r'<form id="signin_form" action="/" method="post"'
-
-        # Load initial team landing page
-        landing = self.session.get(self.team_url)
-        landing.raise_for_status()
+        """Get the non-OAuth slack team login page."""
+        self.driver.get(self.team_url)
 
         # Check for presence of login form and return if found
-        if re.search(post_regex, landing.content.decode('utf-8')):
-            return (landing, self.team_url)
+        try:
+            form = WebDriverWait(self.driver, 10)\
+                .until(lambda x: x.find_element_by_id('signin_form'))
+        except NoSuchElementException:
+            # Attempt to load non-OAuth login page
+            non_oauth_url = f'{self.team_url}/?no_sso=1'
+            self.driver.get(non_oauth_url)
 
-        # Set up non-OAuth page url
-        non_oauth_url = '{team_url}/?no_sso=1'.format(team_url=self.team_url)
+            # Check for presence of login form and return if found
+            try:
+                form = WebDriverWait(self.driver, 10) \
+                    .until(lambda x: x.find_element_by_id('signin_form'))
+            except NoSuchElementException:
+                # Exit and print error message if login form is not found
+                sys.exit('ERROR: There was a problem logging in to Slack.')
 
-        # Attempt to load non-OAuth login page
-        login = self.session.get(non_oauth_url)
-        login.raise_for_status()
-
-        # Check for presence of login form and return if found
-        if re.search(post_regex, login.content.decode('utf-8')):
-            return (login, non_oauth_url)
-
-        # Exit and print error message if login form is not found
-        print(
-            ' '.join(
-                [
-                    'ERROR: There was a problem logging in to Slack.',
-                    'OAuth login is not supported at this time.'
-                ]
-            ),
-            file=sys.stderr
-        )
-        sys.exit(1)
-
-        return None
+        return form
 
     def _get_cookies(self):
-        """Login to Slack to retrieve user cookies.
+        """Login to Slack to retrieve user cookies."""
+        self._get_login_page()
 
-        Returns:
-            RequestsCookieJar: Logged in Slack response object cookie jar
+        # Get login form elements
+        email = self.driver.find_element_by_name('email')
+        password = self.driver.find_element_by_name('password')
+        submit = self.driver.find_element_by_id('signin_btn')
 
-        """
-        (login_page, team_url) = self._get_login_page()
+        # Set login info
+        email.send_keys(self.args.email)
+        password.send_keys(self.args.password)
 
-        # Get login crumb
-        login_crumb = self._get_form_crumb(login_page)
+        # Submit login
+        submit.click()
 
-        # Set params
-        data = [
-            'signin=1',
-            'redir=',
-            'crumb={0}'.format(quote(login_crumb.encode('utf-8'), safe='*')),
-            'email={0}'.format(quote(self.args.email, safe='*')),
-            'password={0}'.format(quote(self.args.password, safe='*')),
-            'remember=on'
-        ]
-
-        # Login to Downpour
-        login = self.session.post(
-            team_url,
-            data='&'.join(data),
-            headers={'Content-Type': 'application/x-www-form-urlencoded'},
-            allow_redirects=False
-        )
-        login.raise_for_status()
-
-        # Check for two-factor auth
-        validated = self._validate_tfa(login, team_url)
+        # Check if we need to process TFA
+        try:
+            self.driver.find_element_by_css_selector('input.auth_code')
+        except NoSuchElementException:
+            pass
+        else:
+            # Check for two-factor auth
+            self._validate_tfa()
 
         # Check that we're successfully logged in
-        # Slack will return a 302 for successful POST requests here
-        if validated.status_code != 302:
-            print(
-                ' '.join(
-                    [
-                        'ERROR: There was a problem logging in to Slack.',
-                        'Check your team, email, and password and try again.'
-                    ]
-                ),
-                file=sys.stderr
-            )
-            sys.exit(1)
+        try:
+            script = 'return localStorage.localConfig_v2'
+            result = WebDriverWait(self.driver, 10)\
+                .until(lambda d: d.execute_script(script))
 
-        # Return logged in session
-        return validated.cookies
+            # Load slack data
+            if not json.loads(result)['teams']:
+                raise KeyError
+
+            # Return data
+            return self.driver.get_cookies()
+        except Exception:
+            sys.exit('ERROR: There was a problem logging in to Slack. '
+                     'Check your team, email, and password and try again.')
+
+    def _load_api_key(self, refresh=False):
+        """Load API key from cache or get new one."""
+        if refresh:
+            token = self._get_api_token()
+            self._store_api_token(token)
+            return token
+
+        # Attempt to get token from cache
+        try:
+            token = self._load_api_token()
+        except Exception:
+            return self._load_api_key(refresh=True)
+
+        # Make sure token is still valid
+        if not self._validate_api_token(token):
+            return self._load_api_key(refresh=True)
+
+        # Return valid token
+        return token
+
+    def _store_api_token(self, token):
+        """Store API token to file."""
+        open(self._cache['api_key_file'], 'w+').write(token)
+
+    def _load_api_token(self):
+        """Load API token from file."""
+        return open(self._cache['api_key_file'], 'r').read().strip()
+
+    def _validate_api_token(self, token):
+        """Validate that the token is still valid for this team."""
+        team_res = self.session.get(
+            f'{self.API_ROOT}/team.info',
+            params={'token': token}
+        )
+        team_res.raise_for_status()
+        team_info = team_res.json()
+        return team_info['ok'] and team_info['team']['name'] == self.args.team
 
     def _get_api_token(self):
         """Retrieve the user's session API key."""
-        emoji_page = self.session.get(self.emoji_url)
-        emoji_page.raise_for_status()
+        self._get_cookies()
+        self.driver.get(self.emoji_url)
 
-        # Set regex to find token
-        token_regex = r'\"api_token\":\s?\"(xoxs-[a-zA-Z0-9\-]+)\"'
-
-        # Find the session token on page
-        token = re.findall(token_regex, emoji_page.text)
-
-        # Check for result
-        if not token:
-            print(
-                ' '.join(
-                    [
-                        'ERROR: There was a problem logging in to Slack.',
-                        'Check your team, email, and password and try again.'
-                    ]
-                ),
-                file=sys.stderr
-            )
-            sys.exit(1)
+        # Get API token from page data
+        try:
+            script = 'return window.boot_data.api_token'
+            token = WebDriverWait(self.driver, 10) \
+                .until(lambda d: d.execute_script(script))
+        except Exception:
+            sys.exit('ERROR: There was a problem logging in to Slack. '
+                     'Check your team, email, and password and try again.')
 
         # Otherwise return token
-        return token[0]
+        return token
 
     def yes_or_no(self, question):
-        """Prompts the user for a yes or no answer to a question.
-
-        Args:
-            question (str): Question to prompt the user with
-
-        Returns:
-            bool: True or False response to the question
-
-        """
-        reply = str(raw_input(question + ' (y/n): ')).lower().strip()
+        """Prompts the user for a yes or no answer to a question."""
+        reply = str(input(question + ' (y/n): ')).lower().strip()
         if reply[0] == 'y':
             return True
         if reply[0] == 'n':
@@ -527,10 +446,8 @@ class EmSlackPartyParroter(object):
     def get_current_emoji_list(self):
         """Retrieve list of current Slack team emoji."""
         emoji_res = self.session.get(
-            self.API_ROOT.format('emoji.list'),
-            params={
-                'token': self.api_token
-            }
+            f'{self.API_ROOT}/emoji.list',
+            params={'token': self.api_token}
         )
         emoji_res.raise_for_status()
 
@@ -539,53 +456,25 @@ class EmSlackPartyParroter(object):
 
         # Check for response errors
         if not emoji_list['ok'] or 'emoji' not in emoji_list.keys():
-            print(
-                'ERROR: Unable to load Slack emoji',
-                file=sys.stderr
-            )
-            sys.exit(1)
+            sys.exit('ERROR: Unable to load Slack emoji')
 
         # Return list of current emoji
         return emoji_list['emoji'].keys()
 
     def get_guests_list(self):
-        """Retrieve up-to-date guests list from GitHub.
-
-        Returns:
-            list: Parsed JSON list of current guests
-
-        """
-        guests = requests.get(self._guest['json'])
+        """Retrieve up-to-date guests list from GitHub."""
+        guests = requests.get(self._guest['yaml'])
         guests.raise_for_status()
-
-        # Return parsed JSON
-        return guests.json()
+        return yaml.load(guests.text, Loader=yaml.Loader)
 
     def get_parrot_list(self):
-        """Retrieve up-to-date parrot list from GitHub.
-
-        Returns:
-            list: Parsed JSON list of current parrots
-
-        """
-        parrots = requests.get(self._parrot['json'])
+        """Retrieve up-to-date parrot list from GitHub."""
+        parrots = requests.get(self._parrot['yaml'])
         parrots.raise_for_status()
-
-        # Return parsed JSON
-        return parrots.json()
+        return yaml.load(parrots.text, Loader=yaml.Loader)
 
     def get_emoji_list(self, current_emoji, emojis, is_guest=False):
-        """Get a formatted list of emoji.
-
-        Args:
-            current_emoji (list): All current Slack emojis for the team
-            emojis (list): Available emoji from CultOfThePartyParrot
-            is_guest (bool): Whether or not these are Party Guest emojis
-
-        Returns:
-            list: Formatted list of dicts of emoji data
-
-        """
+        """Get a formatted list of emoji."""
         emoji_list = []
 
         # Loop over all parrots
@@ -596,7 +485,7 @@ class EmSlackPartyParroter(object):
             # Check if we can use an HD image
             if 'hd' in emoji.keys():
                 emoji['use_hd'] = True
-                emoji['slug'] = re.split(r'\/|\.', emoji['hd'])[1]
+                emoji['slug'] = re.split(r'[/.]', emoji['hd'])[1]
 
             # Otherwise use the standard GIF image
             elif 'gif' in emoji.keys():
@@ -606,7 +495,7 @@ class EmSlackPartyParroter(object):
             # If we're only listing, do that
             if self.args.list_available:
                 print(
-                    ':{emoji}:'.format(emoji=emoji['slug']),
+                    f':{emoji["slug"]}:',
                     file=sys.stdout
                 )
                 continue
@@ -618,17 +507,7 @@ class EmSlackPartyParroter(object):
         return emoji_list
 
     def get_parrots_to_add(self, current_emoji, parrots, guests=None):
-        """Determine which parrots are not already added to the team.
-
-        Args:
-            current_emoji (list): List of current team emojis
-            parrots (list): List of available parrot emojis
-            guests (list): List of available guest emojis
-
-        Returns:
-            list: Parrot emojis to be added to the team
-
-        """
+        """Determine which parrots are not already added to the team."""
         parrots_to_add = self.get_emoji_list(current_emoji, parrots)
         guests_to_add = []
 
@@ -641,7 +520,7 @@ class EmSlackPartyParroter(object):
     def post_emoji(self):
         """Make a POST request to add a new Slack team emoji."""
         emoji_add_res = self.session.post(
-            self.API_ROOT.format('emoji.add'),
+            f'{self.API_ROOT}/emoji.add',
             params={
                 'token': self.api_token,
                 'mode': 'data',
@@ -655,29 +534,16 @@ class EmSlackPartyParroter(object):
 
         # Check for response errors
         if not emoji_add['ok']:
-            print(
-                'ERROR: Unable to upload Slack emoji',
-                file=sys.stderr
-            )
-            sys.exit(1)
+            sys.exit('ERROR: Unable to upload Slack emoji')
 
     def add_parrot(self, parrot):
-        """Upload a new parrot emoji to a Slack team.
-
-        Args:
-            parrot (dict): Parrot emoji data
-
-        Returns:
-            str: Error data, if there was a error, otherwise None
-
-        """
+        """Upload a new parrot emoji to a Slack team."""
         parrot_file = parrot['hd'] if parrot['use_hd'] else parrot['gif']
 
         # Get parrot image file path
-        if parrot['is_guest']:
-            parrot_url = os.path.join(self._guest['img'], parrot_file)
-        else:
-            parrot_url = os.path.join(self._parrot['img'], parrot_file)
+        file_root = self._guest['img'] \
+            if parrot['is_guest'] else self._parrot['img']
+        parrot_url = os.path.join(file_root, parrot_file)
 
         # Get parrot
         parrot_img = requests.get(parrot_url, stream=True)
@@ -689,7 +555,7 @@ class EmSlackPartyParroter(object):
 
         # Upload parrot
         emoji_upload_res = self.session.post(
-            self.API_ROOT.format('emoji.add'),
+            f'{self.API_ROOT}/emoji.add',
             data={
                 'token': self.api_token,
                 'name': parrot['slug'],
@@ -712,12 +578,7 @@ class EmSlackPartyParroter(object):
         return None
 
     def add_parrots(self, parrots):
-        """Add new parrots.
-
-        Args:
-            parrots (list): List of dicts of parrot emoji data
-
-        """
+        """Add new parrots."""
         added = []
 
         # Loop over parrots to add
@@ -727,34 +588,19 @@ class EmSlackPartyParroter(object):
 
             # Report any errors
             if error is not None:
-                print(
-                    '+ Error adding \'{parrot_slug}\', {error}'.format(
-                        parrot_slug=parrot['slug'],
-                        error=error
-                    ),
-                    file=sys.stderr
-                )
+                print(f'+ Error adding \'{parrot["slug"]}\', {error}',
+                      file=sys.stderr)
                 continue
 
             # Report success
-            print(
-                '+ Added :{parrot_slug}:'.format(
-                    parrot_slug=parrot['slug']
-                ),
-                file=sys.stdout
-            )
+            print(f'+ Added :{parrot["slug"]}:')
             added.append(parrot)
 
         # Return list of added parrots
         return added
 
     def parrot(self):
-        """Get and upload new parrots to Slack team.
-
-        Returns:
-            list: List of added parrots
-
-        """
+        """Get and upload new parrots to Slack team."""
         parrots = self.get_parrot_list()
         guests = []
 
@@ -767,21 +613,16 @@ class EmSlackPartyParroter(object):
 
         # If we're listing existing, do that and exit
         if self.args.list_existing:
-            print('Existing Parrots:', file=sys.stdout)
+            print('Existing Parrots:')
 
             # Only show parrot emojis
             for emoji in current_emoji:
-                print(
-                    ':{parrot}:'.format(parrot=emoji),
-                    file=sys.stdout
-                )
+                print(f':{emoji}:')
             sys.exit()
 
         # Initialize CLI output
-        if self.args.list_available:
-            print('Available Parrots:', file=sys.stdout)
-        else:
-            print('Starting Parroting...', file=sys.stdout)
+        print('Available Parrots:' if self.args.list_available
+              else 'Starting Parroting...')
 
         # Get parrots to add
         to_add = self.get_parrots_to_add(current_emoji, parrots, guests)
@@ -792,34 +633,24 @@ class EmSlackPartyParroter(object):
 
         # Bail if there are no parrots to add
         if not to_add:
-            print('No new parrots to add!', file=sys.stdout)
+            print('No new parrots to add!')
             sys.exit()
 
         # Report number of new parrots found
-        print(
-            'Found {count} new parrot{s} to add!'.format(
-                count=len(to_add),
-                s='' if len(to_add) == 1 else 's'
-            ),
-            file=sys.stdout
-        )
+        s = '' if len(to_add) == 1 else 's'
+        print(f'Found {len(to_add)} new parrot{s} to add!')
 
         # List the parrots
         for parrot in to_add:
-            print(
-                ':{parrot}:'.format(parrot=parrot['slug']),
-                file=sys.stdout
-            )
+            print(f':{parrot["slug"]}:')
 
         # Exit if we're just listing
         if self.args.list_new:
             sys.exit()
 
         # Prompt user to continue
-        if self.args.quiet:
-            approved = True
-        else:
-            approved = self.yes_or_no('Add them to your Slack team?')
+        approved = True if self.args.quiet \
+            else self.yes_or_no('Add them to your Slack team?')
 
         # Check for approval
         if not approved:
@@ -829,26 +660,16 @@ class EmSlackPartyParroter(object):
         return self.add_parrots(to_add)
 
     def report(self, added):
-        """Print added parrots and send Slack notification.
-
-        Args:
-            added (list): List of added Parrot emoji data
-
-        """
-        print(
-            'Successfully added {count} new parrots!'.format(count=len(added)),
-            file=sys.stdout
-        )
+        """Print added parrots and send Slack notification."""
+        print(f'Successfully added {len(added)} new parrots!')
 
         # Check if we need to alert a Slack channel
         if self.args.channel is None:
             return
 
         # Set up message content
-        message = '*Added {count} new Party Parrot{s}!*'.format(
-            count=len(added),
-            s='s' if len(added) > 1 else ''
-        )
+        s = 's' if len(added) > 1 else ''
+        message = f'*Added {len(added)} new Party Parrot{s}!*'
 
         # Add each parrot to message
         for new in added:
@@ -856,7 +677,7 @@ class EmSlackPartyParroter(object):
 
         # Send Slack message
         sent = self.session.post(
-            self.API_ROOT.format('chat.postMessage'),
+            f'{self.API_ROOT}/chat.postMessage',
             data={
                 'token': self.api_token,
                 'channel': self.args.channel,
@@ -870,18 +691,15 @@ class EmSlackPartyParroter(object):
 
         # Check for bad response from Slack
         if not sent_json['ok']:
-            print(
-                'ERROR: Unable to send Slack message: {error}'.format(
-                    error=sent_json['error']
-                ),
-                file=sys.stderr
-            )
+            print(f'ERROR: Unable to send Slack message: {sent_json["error"]}',
+                  file=sys.stderr)
 
 
 def main():
     """Primary parroter function."""
-    parroter = EmSlackPartyParroter()
-    print('', file=sys.stdout)
+    with yaspin(text='Loading parrots') as sp:
+        parroter = EmSlackPartyParroter()
+        sp.ok("✔")
 
     # Start parroting
     added = parroter.parrot()
