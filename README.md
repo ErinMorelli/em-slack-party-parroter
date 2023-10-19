@@ -2,7 +2,7 @@
 
 Add Party Parrots to your [Slack](#disclaimer) team's custom emoji library.
 
-[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=ErinMorelli_em-slack-party-parroter&metric=alert_status)](https://sonarcloud.io/dashboard?id=ErinMorelli_em-slack-party-parroter)
+[![CodeFactor](https://www.codefactor.io/repository/github/erinmorelli/em-slack-party-parroter/badge)](https://www.codefactor.io/repository/github/erinmorelli/em-slack-party-parroter)
 
 ---
 
@@ -20,7 +20,12 @@ Add Party Parrots to your [Slack](#disclaimer) team's custom emoji library.
     pip install -r requirements.txt
     ```
 
-3. Run the help command to make sure everything is working and to view the script's options:
+3. Make sure a headless browser is installed and accessible in your `PATH`.
+
+   * We recommend `chromedriver` (default) or `geckodriver`
+
+
+4. Run the help command to make sure everything is working and to view the script's options:
 
     ```
     ./parroter.py --help
